@@ -3,11 +3,17 @@ import random
 class OthelloGame:
     """6x6のオセロゲームのロジックを管理するクラス"""
 
-    def __init__(self):
+    def __init__(self, player1_name="プレイヤー1", player2_name="プレイヤー2"):
         self.size = 6
         self.board = [[0] * self.size for _ in range(self.size)]
-        # 0: 空, 1: 黒(User), -1: 白(CPU)
+        # 0: 空, 1: 黒(プレイヤー1), -1: 白(プレイヤー2)
         self.current_player = 1
+        
+        # プレイヤー情報
+        self.player1_name = player1_name
+        self.player2_name = player2_name
+        self.player_names = {1: player1_name, -1: player2_name}
+        self.player_emojis = {1: "⚫️", -1: "⚪️"}
 
         # 初期配置
         mid = self.size // 2
@@ -59,9 +65,37 @@ class OthelloGame:
         self.current_player *= -1  # ターン交代
         return True
 
+    def get_current_player_name(self):
+        """現在のプレイヤー名を取得"""
+        return self.player_names[self.current_player]
+
+    def get_current_player_emoji(self):
+        """現在のプレイヤーの絵文字を取得"""
+        return self.player_emojis[self.current_player]
+
+    def is_game_over(self):
+        """ゲーム終了判定"""
+        player1_moves = self.get_legal_moves(1)
+        player2_moves = self.get_legal_moves(-1)
+        return not player1_moves and not player2_moves
+
+    def get_winner(self):
+        """勝敗を判定し、スコアを返す"""
+        player1_score = sum(row.count(1) for row in self.board)
+        player2_score = sum(row.count(-1) for row in self.board)
+
+        if player1_score > player2_score:
+            winner = f"{self.player_emojis[1]} {self.player1_name}"
+        elif player2_score > player1_score:
+            winner = f"{self.player_emojis[-1]} {self.player2_name}"
+        else:
+            winner = "引き分け"
+        return winner, player1_score, player2_score
+
+    # 後方互換性のため、CPU関連のメソッドを残す
     def cpu_move(self):
-        """CPUの思考ルーチン (最も多く取れる手を選ぶ)"""
-        legal_moves = self.get_legal_moves(-1) # CPUは白(-1)
+        """CPUの思考ルーチン (最も多く取れる手を選ぶ) - 後方互換性のため残す"""
+        legal_moves = self.get_legal_moves(-1)
         if not legal_moves:
             return None
 
@@ -69,22 +103,3 @@ class OthelloGame:
         best_move = max(legal_moves, key=legal_moves.get)
         self.make_move(best_move[0], best_move[1], -1)
         return best_move
-
-    def is_game_over(self):
-        """ゲーム終了判定"""
-        user_moves = self.get_legal_moves(1)
-        cpu_moves = self.get_legal_moves(-1)
-        return not user_moves and not cpu_moves
-
-    def get_winner(self):
-        """勝敗を判定し、スコアを返す"""
-        black_score = sum(row.count(1) for row in self.board)
-        white_score = sum(row.count(-1) for row in self.board)
-
-        if black_score > white_score:
-            winner = "⚫️ あなた"
-        elif white_score > black_score:
-            winner = "⚪️ CPU"
-        else:
-            winner = "引き分け"
-        return winner, black_score, white_score

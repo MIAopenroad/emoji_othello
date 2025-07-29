@@ -17,6 +17,8 @@ app = App(token=os.environ.get("SLACK_BOT_TOKEN"))
 
 # ゲームインスタンスをチャンネルIDごとに保存
 games = {}
+# プレイヤー2の設定待ち状態を管理
+waiting_for_player2 = {}
 
 # --- ヘルパー関数 ---
 def safe_say(say_func, message, channel_id):
@@ -52,8 +54,8 @@ def format_board(game):
             elif cell == -1:
                 board_str += "⚪️"
             else:
-                if (x, y) in legal_moves and game.current_player == 1:
-                    board_str += "🔵" # ユーザーが置ける場所
+                if (x, y) in legal_moves:
+                    board_str += "🔵" # 現在のプレイヤーが置ける場所
                 else:
                     board_str += "🟩"
         board_str += "\n"
@@ -78,29 +80,87 @@ def xy_to_coord(x, y):
 def handle_start_game(ack, say, command):
     ack()
     channel_id = command["channel_id"]
+    user_id = command["user_id"]
     
     if channel_id in games:
         safe_say(say, "このチャンネルでは既にゲームが進行中です。終了するには `/othello-end` と入力してください。", channel_id)
         return
 
-    game = OthelloGame()
-    games[channel_id] = game
+    # プレイヤー名を取得
+    try:
+        user_info = app.client.users_info(user=user_id)
+        player1_name = user_info["user"]["real_name"] or user_info["user"]["name"]
+    except:
+        player1_name = "プレイヤー1"
+    
+    # プレイヤー2の設定を待つ状態にする
+    waiting_for_player2[channel_id] = {
+        "player1_id": user_id,
+        "player1_name": player1_name,
+        "timestamp": time.time()
+    }
+    
+    safe_say(say, f"6x6 オセロを開始します！\n⚫️ {player1_name} が参加しました。\nプレイヤー2が `/othello-join` と入力して参加してください。", channel_id)
 
+@app.command("/othello-join")
+def handle_join_game(ack, say, command):
+    ack()
+    channel_id = command["channel_id"]
+    user_id = command["user_id"]
+    
+    if channel_id not in waiting_for_player2:
+        safe_say(say, "参加待ちのゲームがありません。`/othello-start` でゲームを開始してください。", channel_id)
+        return
+    
+    # プレイヤー1と同じユーザーは参加できない
+    if user_id == waiting_for_player2[channel_id]["player1_id"]:
+        safe_say(say, "プレイヤー1と同じユーザーは参加できません。", channel_id)
+        return
+    
+    # プレイヤー2名を取得
+    try:
+        user_info = app.client.users_info(user=user_id)
+        player2_name = user_info["user"]["real_name"] or user_info["user"]["name"]
+    except:
+        player2_name = "プレイヤー2"
+    
+    # ゲームを開始
+    player1_name = waiting_for_player2[channel_id]["player1_name"]
+    game = OthelloGame(player1_name=player1_name, player2_name=player2_name)
+    games[channel_id] = game
+    
+    # プレイヤー情報を保存
+    game.player1_id = waiting_for_player2[channel_id]["player1_id"]
+    game.player2_id = user_id
+    game.player_ids = {1: game.player1_id, -1: game.player2_id}
+    
+    # 待機状態を削除
+    del waiting_for_player2[channel_id]
+    
     board_text = format_board(game)
-    safe_say(say, f"6x6 オセロを開始します！ ⚫️ (あなた) のターンです。\n`/othello-put [A-F][1-6]` で石を置いてください。\n{board_text}", channel_id)
+    current_player_emoji = game.get_current_player_emoji()
+    current_player_name = game.get_current_player_name()
+    
+    safe_say(say, f"⚪️ {player2_name} が参加しました！\n{current_player_emoji} {current_player_name} のターンです。\n`/othello-put [A-F][1-6]` で石を置いてください。\n{board_text}", channel_id)
 
 @app.command("/othello-put")
 def handle_put_disc(ack, say, command):
     ack()
     channel_id = command["channel_id"]
+    user_id = command["user_id"]
     
     if channel_id not in games:
         safe_say(say, "ゲームが開始されていません。`/othello-start` で開始してください。", channel_id)
         return
 
     game = games[channel_id]
-    if game.current_player != 1:
-        safe_say(say, "CPUのターンです。しばらくお待ちください。", channel_id)
+    current_player_emoji = game.get_current_player_emoji()
+    current_player_name = game.get_current_player_name()
+    
+    # 現在のプレイヤーが手番かチェック
+    current_player_id = game.player_ids.get(game.current_player)
+    if user_id != current_player_id:
+        safe_say(say, f"{current_player_emoji} {current_player_name} のターンです。お待ちください。", channel_id)
         return
 
     coord_str = command.get("text", "").strip()
@@ -110,68 +170,56 @@ def handle_put_disc(ack, say, command):
         safe_say(say, f"入力形式が正しくありません。`A1` のように入力してください。", channel_id)
         return
 
-    if not game.get_flippable_discs(x, y, 1):
+    if not game.get_flippable_discs(x, y, game.current_player):
         safe_say(say, f"{coord_str} には石を置けません。青いマス(🔵)に置いてください。", channel_id)
         return
 
-    # ユーザーのターン
-    game.make_move(x, y, 1)
-    safe_say(say, f"⚫️ が {coord_str.upper()} に置きました。", channel_id)
+    # 石を置く
+    game.make_move(x, y, game.current_player)
+    safe_say(say, f"{current_player_emoji} {current_player_name} が {coord_str.upper()} に置きました。", channel_id)
 
     # ゲーム終了チェック
     if game.is_game_over():
         end_game(channel_id, say)
         return
 
-    # 盤面更新
-    board_text = format_board(game)
-    cpu_turn_message = safe_say(say, f"⚪️ (CPU) のターンです...\n{board_text}", channel_id)
+    # 次のプレイヤーの手番をチェック
+    next_player_emoji = game.get_current_player_emoji()
+    next_player_name = game.get_current_player_name()
     
-    if cpu_turn_message is None:
-        return  # エラーが発生した場合は処理を停止
-    
-    time.sleep(1.5) # CPUが考えているように見せる
-
-    # CPUのターン
-    if game.current_player == -1:
-        cpu_move_pos = game.cpu_move()
-        if cpu_move_pos:
-            cpu_coord_str = xy_to_coord(cpu_move_pos[0], cpu_move_pos[1])
-            try:
-                app.client.chat_update(
-                    channel=channel_id,
-                    ts=cpu_turn_message['ts'],
-                    text=f"⚪️ (CPU) が {cpu_coord_str} に置きました。⚫️ (あなた) のターンです。\n{format_board(game)}"
-                )
-            except SlackApiError as e:
-                print(f"メッセージ更新エラー: {e.response['error']}")
-        else: # CPUがパスする場合
-            game.current_player *= -1 # ターンを戻す
-            try:
-                app.client.chat_update(
-                    channel=channel_id,
-                    ts=cpu_turn_message['ts'],
-                    text=f"⚪️ (CPU) はパスしました。続けて ⚫️ (あなた) のターンです。\n{format_board(game)}"
-                )
-            except SlackApiError as e:
-                print(f"メッセージ更新エラー: {e.response['error']}")
-    
-    # 再度、ユーザーが置けるかチェック
-    if not game.get_legal_moves(1):
-        # ユーザーもパスならゲーム終了
+    # 次のプレイヤーが置ける場所があるかチェック
+    if not game.get_legal_moves(game.current_player):
+        # パスの場合
+        safe_say(say, f"{next_player_emoji} {next_player_name} は置ける場所がありません。パスします。", channel_id)
+        game.current_player *= -1  # ターンを戻す
+        
+        # 再度ゲーム終了チェック
         if game.is_game_over():
             end_game(channel_id, say)
-        else:
-             safe_say(say, f"あなたは置ける場所がありません。パスします。", channel_id)
-             # 再度CPUのターンを実行する必要があるが、今回は簡易的に省略
+            return
+        
+        # 次のプレイヤーも置けない場合
+        if not game.get_legal_moves(game.current_player):
+            end_game(channel_id, say)
+            return
+    
+    # 盤面更新
+    board_text = format_board(game)
+    safe_say(say, f"{next_player_emoji} {next_player_name} のターンです。\n{board_text}", channel_id)
 
 @app.command("/othello-end")
 def handle_end_game(ack, say, command):
     ack()
     channel_id = command["channel_id"]
+    
+    # 進行中のゲームを終了
     if channel_id in games:
         del games[channel_id]
         safe_say(say, "現在のゲームを強制終了しました。", channel_id)
+    # 待機状態のゲームを終了
+    elif channel_id in waiting_for_player2:
+        del waiting_for_player2[channel_id]
+        safe_say(say, "待機中のゲームを終了しました。", channel_id)
     else:
         safe_say(say, "進行中のゲームはありません。", channel_id)
 
@@ -179,10 +227,10 @@ def end_game(channel_id, say):
     """ゲーム終了時の処理"""
     if channel_id in games:
         game = games[channel_id]
-        winner, black, white = game.get_winner()
+        winner, player1_score, player2_score = game.get_winner()
         result_text = (
             f"ゲーム終了！\n"
-            f"スコア: ⚫️ (あなた) {black} - {white} ⚪️ (CPU)\n"
+            f"スコア: {game.player_emojis[1]} {game.player1_name} {player1_score} - {player2_score} {game.player_emojis[-1]} {game.player2_name}\n"
             f"勝者: **{winner}**"
         )
         safe_say(say, f"{format_board(game)}\n{result_text}", channel_id)
